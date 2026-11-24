@@ -1,0 +1,28 @@
+# Données personnelles de l'élève (notes, cours, synchro Pronote, base SQLite) : jamais sur GitHub
+donnees/
+*.db
+*.db-shm
+*.db-wal
+
+# Dépendances et compilations
+node_modules/
+app/Frontend/dist/
+*.tsbuildinfo
+target/
+app/Backend/gen/
+
+# Réglages propres à cette machine
+app/Backend/.cargo/config.toml
+.claude/settings.local.json
+.env
+.env.*
+
+# Le skill Claude (.claude/skills/) et .claude/launch.json restent suivis.
+
+# Système / éditeurs
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.log
