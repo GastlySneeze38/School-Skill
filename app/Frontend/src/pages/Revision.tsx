@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { ArrowLeft, BookOpen, Check, CircleHelp, CornerDownLeft, Flame, Loader2, Repeat, RotateCcw, Sparkles, X } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, ChevronDown, CircleHelp, CornerDownLeft, FileText, Flame, Loader2, Quote, Repeat, RotateCcw, Sparkles, X } from "lucide-react";
 import { Matiere } from "../components/partages";
 import { Pastille } from "../components/ui";
 import {
@@ -118,9 +118,11 @@ export function Revision({ aller }: { aller: (id: IdPage) => void }) {
   const q = affichee !== null ? etat.questions[affichee] : null;
   const reponse = affichee !== null ? etat.reponses.find((r) => r.idx === affichee) : undefined;
   const matiere = etat.matieres.find((m) => m.matiere === active) ?? null;
+  // Un développement sur document prend toute la largeur : le document à gauche, l'éditeur à droite.
+  const large = !!q && avecDocument(q);
 
   return (
-    <div className="mx-auto grid max-w-3xl gap-4">
+    <div className={`mx-auto grid gap-4 ${large ? "max-w-6xl" : "max-w-3xl"}`}>
       <Bandeau etat={etat} matiere={matiere} faites={indices.length - libres.length} changer={() => setActive(null)} />
       {q && affichee !== null ? (
         <CarteQuestion
@@ -310,6 +312,9 @@ function CarteQuestion({
   continuer: () => void;
   envoi: boolean;
 }) {
+  // « Citer » dans le document insère le passage dans la partie de l'éditeur en cours.
+  const citer = useRef<((texte: string) => void) | null>(null);
+
   // Après la correction, Entrée = continuer (sauf pendant une saisie).
   useEffect(() => {
     if (!reponse) return;
@@ -345,8 +350,14 @@ function CarteQuestion({
         {q.lecon && q.phase === "comprendre" && <span className="truncate">· {q.lecon}</span>}
       </div>
       <p className="mt-3 text-[20px] leading-snug font-semibold">{q.enonce}</p>
-      {q.support && <pre className="mt-4 rounded-md border border-bordure bg-fond/60 p-3.5 font-sans text-[13.5px] whitespace-pre-wrap text-encre-2">{q.support}</pre>}
+      {q.support && !avecDocument(q) && <pre className="mt-4 rounded-md border border-bordure bg-fond/60 p-3.5 font-sans text-[13.5px] whitespace-pre-wrap text-encre-2">{q.support}</pre>}
 
+      {avecDocument(q) ? (
+        <div className="mt-5 grid gap-5 lg:grid-cols-2 lg:items-start">
+          <Document texte={q.support ?? ""} citer={reponse ? undefined : (t) => citer.current?.(t)} />
+          <Developpement q={q} cle={idx} reponse={reponse} repondre={repondre} envoi={envoi} citer={citer} />
+        </div>
+      ) : (
       <div className="mt-5">
         {q.format === "qcm" && <Choix q={q} cle={idx} reponse={reponse} repondre={repondre} />}
         {q.format === "vrai_faux" && <Choix q={q} cle={idx} reponse={reponse} repondre={repondre} vraiFaux />}
@@ -354,6 +365,7 @@ function CarteQuestion({
         {q.format === "calcul" && <Texte q={q} reponse={reponse} repondre={repondre} envoi={envoi} calcul />}
         {q.format === "developpement" && <Developpement q={q} cle={idx} reponse={reponse} repondre={repondre} envoi={envoi} />}
       </div>
+      )}
 
       {!reponse && (
         <div className="mt-4 flex justify-center">
@@ -448,8 +460,24 @@ function Texte({ q, reponse, repondre, envoi, calcul = false }: { q: QuestionJou
  * Développement : un éditeur découpé selon le plan proposé, pour remplacer le papier.
  * Le brouillon est gardé en local à chaque frappe : rien n'est perdu si l'app se ferme.
  */
-function Developpement({ q, cle, reponse, repondre, envoi }: { q: QuestionJour; cle: number; reponse?: ReponseJour; repondre: (r: ReponseDonnee) => void; envoi: boolean }) {
+function Developpement({
+  q,
+  cle,
+  reponse,
+  repondre,
+  envoi,
+  citer,
+}: {
+  q: QuestionJour;
+  cle: number;
+  reponse?: ReponseJour;
+  repondre: (r: ReponseDonnee) => void;
+  envoi: boolean;
+  citer?: React.RefObject<((texte: string) => void) | null>;
+}) {
   const stockage = `brouillon-${new Date().toISOString().slice(0, 10)}-${cle}`;
+  const partieActive = useRef(0);
+  const champs = useRef<(HTMLTextAreaElement | null)[]>([]);
   const [sections, setSections] = useState<string[]>(() => {
     if (reponse && "sections" in reponse.reponse) return reponse.reponse.sections;
     try {
@@ -463,6 +491,23 @@ function Developpement({ q, cle, reponse, repondre, envoi }: { q: QuestionJour; 
     setSections(s);
     localStorage.setItem(stockage, JSON.stringify(s));
   };
+  // La citation va à la fin de la dernière partie où l'élève écrivait, puis le curseur y revient.
+  useEffect(() => {
+    if (!citer) return;
+    citer.current = (texte) => {
+      const i = partieActive.current;
+      const avant = sections[i] ?? "";
+      maj(i, `${avant}${avant && !/\s$/.test(avant) ? " " : ""}« ${texte} » `);
+      requestAnimationFrame(() => {
+        const champ = champs.current[i];
+        champ?.focus();
+        champ?.setSelectionRange(champ.value.length, champ.value.length);
+      });
+    };
+    return () => {
+      citer.current = null;
+    };
+  });
   const mots = sections.join(" ").split(/\s+/).filter(Boolean).length;
   const envoyer = () => {
     if (!mots) return;
@@ -477,6 +522,10 @@ function Developpement({ q, cle, reponse, repondre, envoi }: { q: QuestionJour; 
             {i + 1}. {partie}
           </span>
           <textarea
+            ref={(el) => {
+              champs.current[i] = el;
+            }}
+            onFocus={() => (partieActive.current = i)}
             value={sections[i] ?? ""}
             onChange={(e) => maj(i, e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && (e.ctrlKey || e.metaKey) && (e.preventDefault(), envoyer())}
@@ -498,6 +547,68 @@ function Developpement({ q, cle, reponse, repondre, envoi }: { q: QuestionJour; 
         </div>
       )}
     </div>
+  );
+}
+
+/** Un développement se fait sur document, comme en éval : on l'affiche à côté de l'éditeur. */
+function avecDocument(q: QuestionJour) {
+  return q.format === "developpement" && !!q.support?.trim();
+}
+
+/**
+ * Le document de la question. Sélectionner un passage puis « Citer » le recopie entre guillemets
+ * dans l'éditeur. Sur petit écran il passe au-dessus et se replie.
+ */
+function Document({ texte, citer }: { texte: string; citer?: (t: string) => void }) {
+  const [ouvert, setOuvert] = useState(true);
+  const [selection, setSelection] = useState("");
+  const zone = useRef<HTMLDivElement>(null);
+  // La source est entre parenthèses à la fin du support : on la sépare pour l'afficher en légende.
+  const m = texte.trim().match(/^([\s\S]*?)\s*\(([^()]{3,160})\)\s*$/);
+  const corps = m ? m[1] : texte.trim();
+  const source = m ? m[2] : null;
+
+  const lireSelection = () => {
+    const s = window.getSelection();
+    const dedans = s && s.rangeCount > 0 && zone.current?.contains(s.getRangeAt(0).commonAncestorContainer);
+    setSelection(dedans ? s.toString().trim().replace(/\s+/g, " ") : "");
+  };
+
+  return (
+    <section className="rounded-lg border border-bordure bg-fond/50 lg:sticky lg:top-4">
+      <header className="flex items-center gap-2 border-b border-bordure px-4 py-2.5">
+        <FileText size={15} className="text-encre-3" />
+        <span className="text-[12.5px] font-semibold text-encre-2">Document</span>
+        <span className="flex-1" />
+        {citer && selection && (
+          <button
+            className="btn h-7 gap-1.5 px-2.5 text-[12.5px]"
+            onMouseDown={(e) => e.preventDefault()} // garde la sélection
+            onClick={() => {
+              citer(selection);
+              setSelection("");
+              window.getSelection()?.removeAllRanges();
+            }}
+          >
+            <Quote size={13} /> Citer
+          </button>
+        )}
+        <button className="btn btn-fantome h-7 px-2 lg:hidden" onClick={() => setOuvert((o) => !o)} aria-expanded={ouvert} aria-label={ouvert ? "Replier le document" : "Afficher le document"}>
+          <ChevronDown size={15} className={ouvert ? "rotate-180" : ""} />
+        </button>
+      </header>
+      <div className={`${ouvert ? "" : "hidden"} lg:block`}>
+        <div ref={zone} onMouseUp={lireSelection} onKeyUp={lireSelection} className="max-h-[60vh] overflow-auto px-4 py-3.5 font-serif text-[15px] leading-relaxed whitespace-pre-wrap text-encre">
+          {corps}
+        </div>
+        {(source || citer) && (
+          <footer className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-bordure px-4 py-2 text-[12px] text-encre-3">
+            {source && <span className="italic">{source}</span>}
+            {citer && <span className="ml-auto">Sélectionne un passage pour le citer</span>}
+          </footer>
+        )}
+      </div>
+    </section>
   );
 }
 

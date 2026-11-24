@@ -20,6 +20,14 @@ Règles :
 - En langues : traduire, conjuguer en contexte, reformuler, répondre à une question de compréhension.
 - Les QCM sont rapides mais trop faciles si les mauvaises réponses sont absurdes : utilise des confusions réelles comme distracteurs.
 
+## Faire réfléchir, pas réciter
+
+Une question de cours pure (« Donne la définition de… », « Qui a écrit… ? ») ne demande aucune réflexion : elle sert d'échauffement, 1 ou 2 par série au plus. Les autres demandent de **se servir** du cours : expliquer un pourquoi, interpréter un document, appliquer à un cas nouveau, comparer, trouver l'erreur dans un raisonnement.
+
+- **Colle au cours réel.** Pars des textes, scènes, documents, exemples et activités cités dans le cahier de textes et dans les documents des profs. Une bonne question ressemble à ce que *ce* prof demanderait en éval sur *ce* cours. Le programme officiel ne sert qu'à combler un cours vide.
+- **Des documents, souvent.** Au moins la moitié des questions partent d'un support : un extrait recopié fidèlement d'un document du prof ou d'une œuvre étudiée, un tableau de chiffres, la description précise d'un schéma, avec sa source entre parenthèses à la fin.
+- **Un développement se fait toujours sur document**, comme en éval, et la correction vérifie que l'élève l'exploite (citation, chiffre, détail précis) au lieu de réciter son cours.
+
 ## Écrire un bon QCM à 4 choix
 
 Un QCM trop facile mesure le hasard, pas la compréhension. Pour qu'il serve vraiment :

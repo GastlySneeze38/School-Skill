@@ -2,17 +2,17 @@
 
 ## 1. Questions de développement : afficher un document
 Aujourd'hui, une question de développement n'est qu'un énoncé suivi de 3 zones de texte (voir la capture du 24/11, Français, *L'École des femmes*). En éval, on développe **à partir d'un document**. Il faut donc :
-- [ ] Toujours fournir un `support` pour le format `developpement` : extrait du texte étudié, document du prof, carte, tableau de chiffres… (le champ `support` existe déjà dans `QuestionJour`, `app/Backend/src/revision_jour.rs`).
-- [ ] Afficher ce document **à côté de l'éditeur** (deux colonnes sur grand écran, document repliable au-dessus sur petit écran), avec la possibilité de surligner ou citer un passage dans la réponse (`app/Frontend/src/pages/Revision.tsx`, composant de l'éditeur).
+- [x] Toujours fournir un `support` pour le format `developpement` : extrait du texte étudié, document du prof, carte, tableau de chiffres… (le champ `support` existe déjà dans `QuestionJour`, `app/Backend/src/revision_jour.rs`).
+- [x] Afficher ce document **à côté de l'éditeur** (deux colonnes sur grand écran, document repliable au-dessus sur petit écran), avec la possibilité de surligner ou citer un passage dans la réponse (`app/Frontend/src/pages/Revision.tsx`, composant de l'éditeur).
 - [ ] Gérer les documents qui sont des images ou des PDF (fichiers de `donnees/pronote/fichiers/`), pas seulement du texte.
-- [ ] Dans la correction, vérifier que l'élève **utilise** le document (citations, références précises).
+- [x] Dans la correction, vérifier que l'élève **utilise** le document (citations, références précises).
 
 ## 2. Des questions de réflexion, pas des questions bateau
 Le « prompt système » de `generer()` (`revision_jour.rs`, `REGLES_FORMATS`) produit trop de questions de cours (« donne la définition de… ») où il n'y a rien à réfléchir.
-- [ ] Réécrire les consignes : la majorité des questions doivent **utiliser le cours pour raisonner** (expliquer pourquoi, comparer, appliquer à un cas nouveau, interpréter un document, argumenter). Les questions de récitation ne servent qu'à un échauffement rapide.
-- [ ] S'appuyer sur **ce qui s'est vraiment passé en cours** : le contenu du cahier de textes, les exercices faits en classe, les documents distribués. Les questions doivent ressembler à celles du prof, pas à un manuel générique.
-- [ ] Faire en sorte que beaucoup plus de questions partent d'un **document du cours** (pièces jointes Pronote, textes étudiés).
-- [ ] Mettre à jour `references/pedagogie.md` et `SKILL.md` dans le même sens, pour que le skill et l'app posent le même genre de questions.
+- [x] Réécrire les consignes : la majorité des questions doivent **utiliser le cours pour raisonner** (expliquer pourquoi, comparer, appliquer à un cas nouveau, interpréter un document, argumenter). Les questions de récitation ne servent qu'à un échauffement rapide.
+- [x] S'appuyer sur **ce qui s'est vraiment passé en cours** : le contenu du cahier de textes, les exercices faits en classe, les documents distribués. Les questions doivent ressembler à celles du prof, pas à un manuel générique.
+- [x] Faire en sorte que beaucoup plus de questions partent d'un **document du cours** (pièces jointes Pronote, textes étudiés).
+- [x] Mettre à jour `references/pedagogie.md` et `SKILL.md` dans le même sens, pour que le skill et l'app posent le même genre de questions.
 - [ ] Test : générer une séance par matière et compter la part de questions de réflexion / de questions appuyées sur un document.
 
 ## 3. Plus de sources de données
