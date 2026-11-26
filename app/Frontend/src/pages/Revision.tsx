@@ -27,7 +27,7 @@ const REVISER = "__reviser__";
  * qu'on a compris la leçon (le % monte petit à petit), puis on passe à la matière suivante ou on révise.
  */
 export function Revision({ aller }: { aller: (id: IdPage) => void }) {
-  const { recharger, claude } = useDonnees();
+  const { recharger, ia } = useDonnees();
   const [etat, setEtat] = useState<EtatJour | null>(null);
   /** Matière en cours (gardée pour la journée : on reprend où on en était). */
   const [active, setActiveBrut] = useState<string | null>(() => localStorage.getItem(`seance-active-${aujourdhui()}`));
@@ -67,7 +67,7 @@ export function Revision({ aller }: { aller: (id: IdPage) => void }) {
   const enCorrection = !!etat?.reponses.some((r) => r.statut === "en_correction");
   const attente = !!etat && (etat.matieres.some((m) => m.en_preparation) || etat.suite_en_cours || enCorrection);
 
-  // Tant que Claude travaille (préparation, suite, correction), on relit l'état toutes les 3 s.
+  // Tant que l'IA travaille (préparation, suite, correction), on relit l'état toutes les 3 s.
   useEffect(() => {
     if (!attente) return;
     const t = setInterval(rafraichir, 3000);
@@ -111,7 +111,7 @@ export function Revision({ aller }: { aller: (id: IdPage) => void }) {
 
   // Matière enregistrée hier, ou qui n'est plus dans la liste : on repart du choix.
   if (!active || (active !== REVISER && !etat.matieres.some((m) => m.matiere === active))) {
-    return <ChoixMatiere etat={etat} choisir={choisir} claudeConnecte={!!claude?.connecte} aller={aller} />;
+    return <ChoixMatiere etat={etat} choisir={choisir} iaPrete={!!ia?.installe} aller={aller} />;
   }
 
   const affichee = corrigee ?? libres[0] ?? null;
@@ -136,10 +136,10 @@ export function Revision({ aller }: { aller: (id: IdPage) => void }) {
           continuer={continuer}
           envoi={envoi}
         />
-      ) : matiere && matiere.nb_questions > 0 ? (
+      ) : matiere && matiere.nb_questions > 0 && !matiere.en_preparation ? (
         <MatiereTerminee etat={etat} matiere={matiere} choisir={choisir} />
       ) : (
-        <Attente etat={etat} matiere={matiere} claudeConnecte={!!claude?.connecte} aller={aller} reessayer={() => choisir(active)} />
+        <Attente etat={etat} matiere={matiere} iaPrete={!!ia?.installe} aller={aller} reessayer={() => choisir(active)} />
       )}
     </div>
   );
@@ -149,7 +149,7 @@ const aujourdhui = () => new Date().toISOString().slice(0, 10);
 
 // ---------------------------------------------------------------- 1. choix de la matière
 
-function ChoixMatiere({ etat, choisir, claudeConnecte, aller }: { etat: EtatJour; choisir: (m: string) => void; claudeConnecte: boolean; aller: (id: IdPage) => void }) {
+function ChoixMatiere({ etat, choisir, iaPrete, aller }: { etat: EtatJour; choisir: (m: string) => void; iaPrete: boolean; aller: (id: IdPage) => void }) {
   const ordre = etat.matieres;
   // Raccourcis : 1, 2, 3… pour une matière, R pour réviser.
   useEffect(() => {
@@ -178,12 +178,12 @@ function ChoixMatiere({ etat, choisir, claudeConnecte, aller }: { etat: EtatJour
           {quand === "aujourd'hui" ? "Tes cours d'aujourd'hui" : `Tes derniers cours (${quand})`} : on vérifie que tu as compris, puis on révise.
         </p>
       </div>
-      {!claudeConnecte && (
+      {!iaPrete && (
         <div className="carte flex items-center gap-3 border-orange/40 bg-orange/5 p-3.5">
           <CircleHelp size={18} className="shrink-0 text-orange" />
-          <p className="flex-1 text-[13px]">Claude n'est pas connecté : il en a besoin pour préparer tes questions.</p>
+          <p className="flex-1 text-[13px]">Il manque des fichiers de l'IA locale : elle en a besoin pour préparer tes questions.</p>
           <button className="btn" onClick={() => aller("parametres")}>
-            Connecter Claude
+            Voir ce qui manque
           </button>
         </div>
       )}
@@ -620,7 +620,7 @@ function Correction({ q, r, continuer }: { q: QuestionJour; r: ReponseJour; cont
     juste: { icone: <Check size={16} />, titre: "Juste !", couleur: "text-vert", fond: "bg-vert/8 border-vert/30" },
     partiel: { icone: <CircleHelp size={16} />, titre: "En partie", couleur: "text-orange", fond: "bg-orange/8 border-orange/30" },
     faux: { icone: <X size={16} />, titre: "Pas tout à fait", couleur: "text-rouge", fond: "bg-rouge/5 border-rouge/25" },
-    en_correction: { icone: <Loader2 size={16} className="animate-spin" />, titre: "Claude corrige ta réponse…", couleur: "text-encre-2", fond: "bg-fond/60 border-bordure" },
+    en_correction: { icone: <Loader2 size={16} className="animate-spin" />, titre: "Correction en cours…", couleur: "text-encre-2", fond: "bg-fond/60 border-bordure" },
   }[r.statut];
   const attendue =
     r.statut !== "juste" && !attente
@@ -648,6 +648,16 @@ function Correction({ q, r, continuer }: { q: QuestionJour; r: ReponseJour; cont
         <>
           {attendue && <p className="mt-1.5 text-[13.5px] font-medium">{attendue}</p>}
           <p className="mt-1.5 text-[13.5px] leading-relaxed text-encre-2">{r.retour ?? q.explication}</p>
+          {/* La connaissance du cours qui servait : c'est elle qu'il faut retenir. */}
+          {q.connaissance && (
+            <p className="mt-2.5 flex gap-2 border-t border-black/5 pt-2.5 text-[13px] leading-relaxed">
+              <BookOpen size={14} className="mt-0.5 shrink-0 text-encre-3" />
+              <span>
+                <span className="font-semibold">À retenir : </span>
+                {q.connaissance}
+              </span>
+            </p>
+          )}
         </>
       )}
       <div className="mt-3 flex justify-end">
@@ -689,7 +699,7 @@ function MatiereTerminee({ etat, matiere, choisir }: { etat: EtatJour; matiere: 
   );
 }
 
-function Attente({ etat, matiere, claudeConnecte, aller, reessayer }: { etat: EtatJour; matiere: MatiereJour | null; claudeConnecte: boolean; aller: (id: IdPage) => void; reessayer: () => void }) {
+function Attente({ etat, matiere, iaPrete, aller, reessayer }: { etat: EtatJour; matiere: MatiereJour | null; iaPrete: boolean; aller: (id: IdPage) => void; reessayer: () => void }) {
   const enPreparation = matiere ? matiere.en_preparation : etat.suite_en_cours;
   if (etat.erreur && !enPreparation) {
     return (
@@ -697,9 +707,9 @@ function Attente({ etat, matiere, claudeConnecte, aller, reessayer }: { etat: Et
         <p className="text-[16px] font-semibold">Les questions n'ont pas pu être préparées</p>
         <p className="mt-1 text-[13px] text-encre-2">{etat.erreur}</p>
         <div className="mt-4 flex justify-center gap-2">
-          {!claudeConnecte && (
+          {!iaPrete && (
             <button className="btn btn-primaire" onClick={() => aller("parametres")}>
-              Connecter Claude
+              Voir l'IA locale
             </button>
           )}
           <button className="btn" onClick={reessayer}>
@@ -714,9 +724,11 @@ function Attente({ etat, matiere, claudeConnecte, aller, reessayer }: { etat: Et
       <div className="carte flex items-center gap-4 p-5">
         <Sparkles size={22} className="shrink-0 text-accent" />
         <div className="flex-1">
-          <p className="text-[16px] font-semibold">{matiere ? `Claude prépare tes questions de ${nomMatiere(matiere.matiere)}` : "La suite arrive"}</p>
+          <p className="text-[16px] font-semibold">
+            {matiere ? (matiere.nb_questions > 0 ? "La question suivante arrive" : `Préparation de tes questions de ${nomMatiere(matiere.matiere)}`) : "La suite arrive"}
+          </p>
           <p className="text-[13px] text-encre-2">
-            {matiere ? "En général moins d'une minute. Pendant ce temps, relis l'essentiel :" : "Claude écrit des questions de révision sur tes points faibles…"}
+            {matiere ? "Quelques secondes. Pendant ce temps, relis l'essentiel :" : "L'IA écrit des questions de révision sur tes points faibles…"}
           </p>
         </div>
         <Loader2 size={18} className="animate-spin text-encre-3" />

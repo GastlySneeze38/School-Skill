@@ -2,13 +2,17 @@
 import { invoke } from "@tauri-apps/api/core";
 import { demoAnalyse, demoJour, demoMoyennes, demoPronote, demoStats, demoSuivi, demoTest } from "./demo";
 
-export type EtatClaude = {
+/** L'IA locale (llama.cpp + modèles, Backend/src/ia.rs). */
+export type EtatIa = {
+  /** llama.cpp et tous les modèles sont là. */
   installe: boolean;
-  connecte: boolean;
-  version: string | null;
-  methode: string | null;
-  abonnement: string | null;
-  detail: string | null;
+  manquants: string[];
+  /** Modèle d'écriture chargé sur la carte graphique (sinon il se charge à la demande). */
+  ecriture: "pret" | "arrete";
+  /** Recherche par le sens (CPU). */
+  recherche: "pret" | "arrete";
+  modele: string;
+  dossier: string;
 };
 
 export type EtatConfig = {
@@ -23,7 +27,7 @@ export type EtatConfig = {
     nb_cours: number | null;
     nb_evals_a_venir: number | null;
   };
-  claude: EtatClaude;
+  ia: EtatIa;
 };
 
 export type ResultatSynchro = {
@@ -33,9 +37,8 @@ export type ResultatSynchro = {
   message: string;
   alertes: string[];
 };
-export type ReponseClaude = { ok: boolean; texte: string };
 
-// --- Séances (Backend/src/seance.rs) : QCM rédigés par Claude avec les instructions du skill
+// --- Séances (Backend/src/seance.rs) : QCM rédigés par l'IA locale avec les instructions du skill
 export type Question = {
   chapitre: string;
   notion: string;
@@ -71,6 +74,8 @@ export type QuestionJour = {
   plan: string[];
   attendus: string[];
   explication: string;
+  /** La connaissance du cours indispensable pour répondre (montrée avec la correction). */
+  connaissance?: string | null;
 };
 /** Ce que l'élève répond, selon le format. */
 export type ReponseDonnee = { choix: number } | { texte: string } | { sections: string[] } | { passe: true };
@@ -87,7 +92,7 @@ export type MatiereJour = {
   matiere: string;
   heure: string;
   lecons: Lecon[];
-  /** Le prof a écrit un contenu (sinon Claude part des derniers cours de la matière). */
+  /** Le prof a écrit un contenu (sinon l'IA part des derniers cours de la matière). */
   a_contenu: boolean;
   nb_questions: number;
   nb_repondues: number;
@@ -192,9 +197,11 @@ export const etatConfig = () => invoke<EtatConfig>("etat_config");
 export const configurerPronote = (p: { url: string; identifiant: string; ent: string; motDePasse: string | null }) =>
   invoke<void>("configurer_pronote", { url: p.url, identifiant: p.identifiant, ent: p.ent, motDePasse: p.motDePasse });
 export const synchroniserPronote = () => invoke<ResultatSynchro>("synchroniser_pronote");
-export const etatClaude = () => invoke<EtatClaude>("etat_claude");
-export const connecterClaude = () => invoke<void>("connecter_claude");
-export const testerClaude = () => invoke<ReponseClaude>("tester_claude");
+export const etatIa = () => invoke<EtatIa>("etat_ia");
+/** Charge le modèle et lui fait écrire une phrase (renvoie la phrase). */
+export const testerIa = () => invoke<string>("tester_ia");
+export type PassageCours = { id: number; source_id: number; matiere: string; type_: string; titre: string; date: string | null; texte: string };
+export const chercherCours = (requete: string, matiere?: string) => invoke<PassageCours[]>("chercher_cours", { requete, matiere: matiere ?? null });
 export const preparerTest = (matiere: string, nbQuestions = 8) =>
   dansTauri() ? invoke<Test>("preparer_test", { matiere, nbQuestions }) : new Promise<Test>((ok) => setTimeout(() => ok(demoTest(matiere)), 1200));
 export const enregistrerReponse = (matiere: string, question: Question, choix: number | null) =>

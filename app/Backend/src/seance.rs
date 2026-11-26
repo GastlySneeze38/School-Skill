@@ -1,4 +1,4 @@
-//! Séances de révision dans l'app : Claude rédige les QCM en suivant les instructions du skill
+//! Séances de révision dans l'app : l'IA locale rédige les QCM en suivant les instructions du skill
 //! `revisions` (SKILL.md + references/pedagogie.md), l'app les affiche et enregistre les réponses
 //! dans le même suivi que le skill.
 
@@ -9,7 +9,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{claude, config, suivi};
+use crate::{config, ia, suivi};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Question {
@@ -143,11 +143,11 @@ de la bonne réponse, à varier d'une question à l'autre. "erreurs" a 4 éléme
         n = nb_questions,
     );
 
-    let reponse = claude::demander(&prompt, "Read", Some(&dossier));
-    if !reponse.ok {
-        bail!("{}", reponse.texte);
-    }
-    let v = claude::extraire_json(&reponse.texte)?;
+    let v = ia::demander_json(
+        "Tu es le coach de révision d'un lycéen. Tu suis les consignes à la lettre et réponds uniquement en JSON.",
+        &prompt,
+        &ia::Options { temperature: Some(0.5), max_jetons: Some(5000), ..Default::default() },
+    )?;
 
     let mut messages = Vec::new();
     for ch in serde_json::from_value::<Vec<ChapitrePropose>>(v["chapitres"].clone()).unwrap_or_default() {
@@ -164,7 +164,7 @@ de la bonne réponse, à varier d'une question à l'autre. "erreurs" a 4 éléme
         .filter(|q| connues.contains(&(q.chapitre.clone(), suivi::slug(&q.notion))))
         .collect();
     if valides.is_empty() {
-        bail!("Claude n'a pas produit de questions utilisables, réessaie.");
+        bail!("L'IA n'a pas produit de questions utilisables, réessaie.");
     }
     Ok(Test { matiere: matiere.to_string(), questions: valides, chapitres: messages })
 }

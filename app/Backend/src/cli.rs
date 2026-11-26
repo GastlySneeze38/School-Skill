@@ -10,14 +10,18 @@
 //!   revisions eval      --matiere M --date AAAA-MM-JJ [--type T] [--titre T] [--chapitres a,b] [--poids 1-3] [--supprimer]
 //!   revisions carte     [--matiere M] [--chapitre C]
 //!   revisions priorites [--n 8] [--json]
-//!   revisions moyennes  [--analyser]   moyennes, progression et conseils de Claude
+//!   revisions moyennes  [--analyser]   moyennes, progression et conseils de l'IA
+//!   revisions jour      [--preparer] [--matiere M]   séance du jour (préparée par l'IA locale)
+//!   revisions connaissances           met à jour la base de connaissances (cours, documents, OCR, vecteurs)
+//!   revisions chercher  --requete R [--matiere M]   recherche dans les cours (celle qu'utilise l'IA)
+//!   revisions essai     --matiere M [--n 6]   écrit des questions sur les derniers cours, sans les enregistrer
 
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use crate::{config, db, moyennes, pronote, revision_jour, suivi};
+use crate::{config, connaissances, db, generation, moyennes, pronote, revision_jour, suivi};
 
 struct Args {
     valeurs: HashMap<String, Vec<String>>,
@@ -286,7 +290,7 @@ fn executer_interne(brut: &[String]) -> Result<i32> {
                         );
                     }
                 }
-                None => println!("\nPas encore d'analyse : `revisions moyennes --analyser` demande à Claude où gagner des points."),
+                None => println!("\nPas encore d'analyse : `revisions moyennes --analyser` demande à l'IA locale où gagner des points."),
             }
             Ok(0)
         }
@@ -317,6 +321,55 @@ fn executer_interne(brut: &[String]) -> Result<i32> {
                 let fait = e.reponses.iter().find(|r| r.idx == i).map(|r| format!(" [{}]", r.statut)).unwrap_or_default();
                 println!("  {:>2}. ({} · {} · {}) {} — {}{fait}", i + 1, q.phase, q.format, q.niveau, q.matiere, q.enonce);
             }
+            Ok(0)
+        }
+        "connaissances" => {
+            let conn = base()?;
+            let r = connaissances::mettre_a_jour(&conn)?;
+            println!("📚 {} sources ({} nouvelles ou modifiées), {} passages, {} vecteurs calculés", r.sources, r.nouvelles, r.passages, r.vecteurs);
+            if !r.illisibles.is_empty() {
+                println!("   ⚠ non lus (format pas encore pris en charge) : {}", r.illisibles.join(", "));
+            }
+            Ok(0)
+        }
+        "chercher" => {
+            let conn = base()?;
+            for p in connaissances::chercher(&conn, a.req("requete")?, a.opt("matiere"), a.opt("n").and_then(|n| n.parse().ok()).unwrap_or(5))? {
+                let extrait = p.texte.chars().take(300).collect::<String>().replace('\n', " ");
+                println!("— {} · {} · {} ({})\n  {extrait}\n", p.matiere, p.type_, p.titre, p.date.unwrap_or_default());
+            }
+            Ok(0)
+        }
+        "essai" => {
+            let conn = base()?;
+            let matiere = a.req("matiere")?;
+            let n = a.opt("n").and_then(|n| n.parse().ok()).unwrap_or(6);
+            connaissances::mettre_a_jour(&conn)?;
+            let debut = std::time::Instant::now();
+            let mut k = 0;
+            generation::serie_comprendre(&conn, matiere, &[], n, |q| {
+                k += 1;
+                println!("\n{k}. [{} · {}] ({:.0} s) {}", q.format, q.notion, debut.elapsed().as_secs_f64(), q.enonce);
+                if let Some(s) = &q.support {
+                    println!("   📄 {}", s.chars().take(160).collect::<String>().replace('\n', " "));
+                }
+                for (i, c) in q.choix.iter().enumerate() {
+                    println!("   {} {}", if Some(i) == q.bonne { "✔" } else { "·" }, c);
+                }
+                if !q.reponses_acceptees.is_empty() {
+                    println!("   → {}", q.reponses_acceptees.join(" | "));
+                }
+                if let Some(v) = q.valeur {
+                    println!("   → {v} {}", q.unite.clone().unwrap_or_default());
+                }
+                for at in &q.attendus {
+                    println!("   • {at}");
+                }
+                println!("   🧠 {}", q.connaissance.clone().unwrap_or_default());
+                println!("   💬 {}", q.explication);
+                Ok(())
+            })?;
+            println!("\n{k} question(s) en {:.0} s", debut.elapsed().as_secs_f64());
             Ok(0)
         }
         autre => bail!("commande inconnue : {autre}"),

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { CheckCircle2, ExternalLink, Loader2, XCircle } from "lucide-react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { Carte } from "../components/ui";
-import { configurerPronote, connecterClaude, dansTauri, etatConfig, testerClaude, type EtatConfig } from "../api";
+import { configurerPronote, dansTauri, etatConfig, testerIa, type EtatConfig } from "../api";
 import { useDonnees } from "../lib/donnees";
 
 export function Parametres() {
@@ -18,7 +18,7 @@ export function Parametres() {
   return (
     <div className="grid max-w-3xl gap-4">
       {erreur && <p className="carte p-3.5 text-[13px] text-rouge">{erreur}</p>}
-      <CarteClaude />
+      <CarteIa />
       <CartePronote etat={etat} apresEnregistrement={verifier} />
       {etat && (
         <Carte titre="Données" sansMarge>
@@ -33,63 +33,37 @@ export function Parametres() {
 }
 
 /**
- * Connexion à Claude : l'app utilise Claude Code connecté à ton forfait. Le bouton ouvre une
- * fenêtre de connexion ; l'app vérifie ensuite toute seule, toutes les 3 s, que c'est fait.
+ * L'IA locale : llama.cpp et les modèles sont sur l'ordinateur (dossier ~/.revisions/ia). Rien à connecter :
+ * le modèle se charge tout seul quand il sert, et se décharge après 10 minutes sans usage.
  */
-function CarteClaude() {
-  const { claude, verifierClaude } = useDonnees();
-  const [attente, setAttente] = useState(false);
+function CarteIa() {
+  const { ia, verifierIa } = useDonnees();
   const [test, setTest] = useState<{ ok: boolean; texte: string } | "en_cours" | null>(null);
-  const minuteur = useRef<number | null>(null);
-
-  useEffect(() => () => void (minuteur.current && clearInterval(minuteur.current)), []);
-
-  const connecter = async () => {
-    await connecterClaude();
-    setAttente(true);
-    const debut = Date.now();
-    minuteur.current = window.setInterval(async () => {
-      const e = await verifierClaude();
-      if (e?.connecte || Date.now() - debut > 180_000) {
-        clearInterval(minuteur.current!);
-        setAttente(false);
-      }
-    }, 3000);
-  };
 
   return (
-    <Carte titre="Claude" aide="L'app passe par Claude Code, connecté à ton forfait Claude : aucun mot de passe n'est stocké ici." sansMarge>
-      <Point ok={!!claude?.installe} titre="Claude Code installé">
-        {claude ? (claude.installe ? claude.version : "Introuvable : installe Claude Code (npm install -g @anthropic-ai/claude-code).") : "Vérification…"}
+    <Carte titre="IA locale" aide="Tout tourne sur ton ordinateur : tes cours ne partent nulle part. Le modèle se charge quand il sert et libère la carte graphique après 10 minutes sans usage." sansMarge>
+      <Point ok={!!ia?.installe} titre="llama.cpp et modèles">
+        {ia ? (ia.installe ? <>Tout est là<code className="mt-0.5 block truncate text-[11.5px] text-encre-3">{ia.dossier}</code></> : `Manquant : ${ia.manquants.join(", ")}`) : "Vérification…"}
       </Point>
-      <Point ok={!!claude?.connecte} titre="Connecté à ton compte">
-        {claude?.connecte ? (
-          `Oui${claude.abonnement ? ` · forfait ${claude.abonnement}` : ""}${claude.methode ? ` (${claude.methode})` : ""}`
-        ) : attente ? (
-          <span className="inline-flex items-center gap-1.5">
-            <Loader2 size={13} className="animate-spin" /> Termine la connexion dans la fenêtre qui s'est ouverte (puis dans ton navigateur)…
-          </span>
-        ) : (
-          "Pas encore : clique sur « Connecter Claude »."
-        )}
+      <Point ok={!!ia?.installe} titre={`Modèle d'écriture : ${ia?.modele ?? "…"}`}>
+        {ia?.ecriture === "pret" ? "Chargé sur la carte graphique, prêt à écrire." : "En veille : il se charge en quelques secondes dès qu'il sert."}
+      </Point>
+      <Point ok={!!ia?.installe} titre="Recherche dans tes cours">
+        {ia?.recherche === "pret" ? "Prête (sur le processeur, sans carte graphique)." : "Démarre à la première recherche."}
       </Point>
       <div className="flex flex-wrap items-center gap-2 px-3.5 py-3">
-        {!claude?.connecte && (
-          <button className="btn btn-primaire" onClick={connecter} disabled={!claude?.installe || attente || !dansTauri()}>
-            <ExternalLink size={14} /> Connecter Claude
-          </button>
-        )}
         <button
           className="btn"
-          disabled={!claude?.connecte || test === "en_cours" || !dansTauri()}
+          disabled={!ia?.installe || test === "en_cours" || !dansTauri()}
           onClick={async () => {
             setTest("en_cours");
-            setTest(await testerClaude().catch((e) => ({ ok: false, texte: String(e) })));
+            setTest(await testerIa().then((t) => ({ ok: true, texte: t })).catch((e) => ({ ok: false, texte: String(e) })));
+            void verifierIa();
           }}
         >
-          {test === "en_cours" ? "Réponse en cours…" : "Tester"}
+          {test === "en_cours" ? <><Loader2 size={14} className="animate-spin" /> Chargement du modèle…</> : "Tester"}
         </button>
-        <button className="btn btn-fantome" onClick={() => void verifierClaude()}>
+        <button className="btn btn-fantome" onClick={() => void verifierIa()}>
           Revérifier
         </button>
         {test && test !== "en_cours" && <p className={`text-[13px] ${test.ok ? "text-vert" : "text-rouge"}`}>{test.texte}</p>}

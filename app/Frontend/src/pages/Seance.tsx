@@ -72,7 +72,7 @@ export function Seance({ aller }: { aller: (id: IdPage) => void }) {
 // ---------------------------------------------------------------- 1. choix
 
 function ChoixMatiere({ lancer, aller, erreur }: { lancer: (m: string) => void; aller: (id: IdPage) => void; erreur: { matiere: string; message: string } | null }) {
-  const { suivi, claude, analyse } = useDonnees();
+  const { suivi, ia, analyse } = useDonnees();
   const [contenu, setContenu] = useState<ContenuMatiere[]>([]);
   useEffect(() => {
     if (dansTauri()) contenuMatieres().then(setContenu).catch(() => setContenu([]));
@@ -87,7 +87,7 @@ function ChoixMatiere({ lancer, aller, erreur }: { lancer: (m: string) => void; 
       vues.add(e.matiere);
       liste.push({ matiere: e.matiere, eval: e, detail: `${e.type}${e.titre ? ` · ${e.titre}` : ""}` });
     }
-    // Puis les matières où Claude voit le plus de points à gagner.
+    // Puis les matières où l'IA voit le plus de points à gagner.
     for (const c of (analyse?.matieres ?? []).filter((x) => x.priorite <= 2)) {
       if (vues.has(c.matiere)) continue;
       vues.add(c.matiere);
@@ -108,12 +108,12 @@ function ChoixMatiere({ lancer, aller, erreur }: { lancer: (m: string) => void; 
 
   return (
     <div className="grid max-w-3xl gap-4">
-      {claude && !claude.connecte && (
+      {ia && !ia.installe && (
         <div className="carte flex items-center gap-3 border-orange/40 bg-orange/5 p-3.5">
           <CircleHelp size={18} className="shrink-0 text-orange" />
-          <p className="flex-1 text-[13px]">Claude n'est pas encore connecté à ton compte : il en a besoin pour écrire les questions.</p>
+          <p className="flex-1 text-[13px]">Il manque des fichiers de l'IA locale : elle en a besoin pour écrire les questions.</p>
           <button className="btn" onClick={() => aller("parametres")}>
-            Connecter Claude
+            Voir ce qui manque
           </button>
         </div>
       )}
@@ -125,7 +125,7 @@ function ChoixMatiere({ lancer, aller, erreur }: { lancer: (m: string) => void; 
       )}
       <Carte
         titre="Test de compétences"
-        aide="Claude rédige les questions à partir de tes cours Pronote, en suivant les mêmes règles que le skill de révision."
+        aide="L'IA locale rédige les questions à partir de tes cours Pronote, en suivant les mêmes règles que le skill de révision."
         sansMarge
       >
         <p className="border-b border-bordure/70 px-3.5 py-3 text-[13px] text-encre-2">
@@ -148,7 +148,7 @@ function ChoixMatiere({ lancer, aller, erreur }: { lancer: (m: string) => void; 
                 </div>
                 {o.eval && <Echeance date={o.eval.date} />}
                 {i === 0 && <Pastille ton="vert">conseillé</Pastille>}
-                <button className={`btn ${i === 0 ? "btn-primaire" : ""}`} disabled={!claude?.connecte} onClick={() => lancer(o.matiere)}>
+                <button className={`btn ${i === 0 ? "btn-primaire" : ""}`} disabled={!ia?.installe} onClick={() => lancer(o.matiere)}>
                   <Play size={12} /> Tester
                 </button>
               </div>
@@ -173,7 +173,7 @@ function Preparation({ matiere, annuler }: { matiere: string; annuler: () => voi
   return (
     <div className="carte mx-auto mt-6 max-w-md p-8 text-center">
       <Sparkles size={26} className="mx-auto text-accent" />
-      <p className="mt-3 text-[17px] font-semibold">Claude prépare ton test de {nomMatiere(matiere)}</p>
+      <p className="mt-3 text-[17px] font-semibold">Préparation de ton test de {nomMatiere(matiere)}</p>
       <p className="mt-1 text-[13px] text-encre-3">En général moins d'une minute.</p>
       <ul className="mx-auto mt-5 grid w-fit gap-2 text-left text-[13px]">
         {etapes.map((e, i) => (

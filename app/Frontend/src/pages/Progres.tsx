@@ -34,7 +34,7 @@ export function Progres({ aller }: { aller: (id: IdPage) => void }) {
       </div>
       <Carte
         titre="Tes moyennes par matière"
-        aide="La barre bleue, c'est toi ; le trait noir, la classe ; le rond, l'objectif conseillé par Claude."
+        aide="La barre bleue, c'est toi ; le trait noir, la classe ; le rond, l'objectif conseillé par l'IA."
         sansMarge
         actions={<Legende />}
       >
@@ -114,15 +114,15 @@ function Evolution({ valeur, depuis }: { valeur: number | null; depuis: string |
   );
 }
 
-// ---------------------------------------------------------------- conseils de Claude
+// ---------------------------------------------------------------- conseils de l'IA
 
 function OuGagnerDesPoints({ aller }: { aller: (id: IdPage) => void }) {
-  const { analyse, analyseEnCours, erreurAnalyse, lancerAnalyse, claude } = useDonnees();
+  const { analyse, analyseEnCours, erreurAnalyse, lancerAnalyse, ia } = useDonnees();
   const prioritaires = (analyse?.matieres ?? []).filter((c) => c.priorite <= 2).slice(0, 4);
   return (
     <Carte
       titre="Où gagner des points"
-      aide="Claude regarde tes moyennes, tes notes récentes et tes révisions, et estime où un effort rapporte le plus."
+      aide="L'IA regarde tes moyennes, tes notes récentes et tes révisions, et estime où un effort rapporte le plus."
       sansMarge
       className="h-full"
       actions={
@@ -130,8 +130,8 @@ function OuGagnerDesPoints({ aller }: { aller: (id: IdPage) => void }) {
           whileHover={analyseEnCours ? undefined : "survol"}
           className="btn h-7"
           onClick={() => void lancerAnalyse()}
-          disabled={analyseEnCours || !claude?.connecte}
-          title={claude?.connecte ? "Demander une nouvelle analyse à Claude" : "Connecte Claude dans Paramètres"}
+          disabled={analyseEnCours || !ia?.installe}
+          title={ia?.installe ? "Demander une nouvelle analyse à l'IA locale" : "Il manque des fichiers de l'IA locale (Paramètres)"}
         >
           <m.span variants={{ survol: { rotate: 90 } }} transition={RESSORT_ICONE} className="inline-flex">
             <RefreshCw size={13} className={analyseEnCours ? "animate-[spin_0.6s_linear_infinite]" : ""} />
@@ -144,8 +144,8 @@ function OuGagnerDesPoints({ aller }: { aller: (id: IdPage) => void }) {
       {!analyse ? (
         <Vide
           icone={<Sparkles size={22} />}
-          titre={analyseEnCours ? "Claude analyse tes moyennes…" : "Pas encore d'analyse"}
-          texte={analyseEnCours ? "Environ une minute." : "Claude te dit dans quelles matières un peu de révision peut faire monter ta moyenne."}
+          titre={analyseEnCours ? "L'IA analyse tes moyennes…" : "Pas encore d'analyse"}
+          texte={analyseEnCours ? "Environ une minute." : "L'IA te dit dans quelles matières un peu de révision peut faire monter ta moyenne."}
         />
       ) : (
         <>

@@ -1,11 +1,11 @@
 //! La séance du jour, l'écran principal de l'app : comprendre la leçon du jour, puis réviser.
 //!
 //! - Préparée en arrière-plan dès l'ouverture de l'app (et après une synchro) : l'élève n'attend pas.
-//! - Tant que Claude prépare, un « échauffement » reprend des questions déjà posées sur des
-//!   notions à revoir, pour démarrer tout de suite.
+//! - L'IA locale écrit les questions une par une (voir `generation`) : la première arrive en quelques
+//!   secondes, les suivantes pendant que l'élève répond.
 //! - Chaque question a le format qui rend la réponse la plus naturelle (QCM, vrai/faux, réponse
 //!   courte, calcul, développement) ; QCM, vrai/faux et calcul sont corrigés sur place, les réponses
-//!   rédigées par Claude en arrière-plan pendant que l'élève continue.
+//!   rédigées par l'IA locale en arrière-plan pendant que l'élève continue.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -15,9 +15,9 @@ use anyhow::{Context, Result, bail};
 use chrono::Local;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::{claude, config, db, moyennes, suivi};
+use crate::{config, connaissances, db, generation, ia, suivi};
 
 fn jour() -> String {
     Local::now().date_naive().to_string()
@@ -77,6 +77,9 @@ pub struct QuestionJour {
     #[serde(default)]
     pub erreurs: Vec<Option<String>>,
     pub explication: String,
+    /// La connaissance du cours indispensable pour répondre (montrée avec la correction).
+    #[serde(default)]
+    pub connaissance: Option<String>,
 }
 
 fn qcm() -> String {
@@ -95,7 +98,7 @@ pub struct Lecon {
 #[derive(Serialize, Clone)]
 pub struct ReponseJour {
     pub idx: usize,
-    /// juste, partiel, faux, en_correction (Claude corrige en arrière-plan).
+    /// juste, partiel, faux, en_correction (l'IA corrige en arrière-plan).
     pub statut: String,
     pub score: f64,
     pub reponse: Value,
@@ -333,28 +336,32 @@ pub fn revisable(matiere: &str) -> bool {
     !["sport", "eps", "vie-de-classe", "heure-de-vie", "accomp", "orient", "pause", "permanence", "etude"].iter().any(|m| s.contains(m))
 }
 
-/// Derniers cours avec contenu d'une matière (quand la leçon du jour n'en a pas).
-fn derniers_cours(dossier: &Path, matiere: &str) -> Vec<Value> {
-    let Ok(t) = std::fs::read_to_string(dossier.join("pronote").join("sync.json")) else { return vec![] };
-    let Ok(sync) = serde_json::from_str::<Value>(&t) else { return vec![] };
-    let auj = jour();
-    let mut v: Vec<Value> = sync["cours"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|c| c["matiere"].as_str() == Some(matiere) && !c["contenu"].is_null())
-        .filter(|c| c["debut"].as_str().unwrap_or("").get(..10).is_some_and(|d| d <= auj.as_str()))
-        .map(|c| {
-            let documents: Vec<&str> = c["contenu"]["fichiers"].as_array().into_iter().flatten().filter_map(|f| f["chemin"].as_str()).collect();
-            json!({ "date": &c["debut"].as_str().unwrap_or("")[..10], "titre": c["contenu"]["titre"], "contenu": c["contenu"]["description"], "documents": documents })
-        })
-        .collect();
-    v.sort_by(|a, b| b["date"].as_str().cmp(&a["date"].as_str()));
-    v.truncate(4);
-    v
+// ---------------------------------------------------------------- préparation (IA locale)
+
+/// Nombre de questions de compréhension par matière.
+const PAR_MATIERE: usize = 6;
+
+/// (début du cours, titre de la leçon) des leçons d'une matière du jour.
+fn debuts(m: &MatiereJour) -> Vec<(String, String)> {
+    m.lecons.iter().map(|l| (l.debut.clone(), l.titre.clone())).collect()
 }
 
-// ---------------------------------------------------------------- préparation
+/// Met la base de connaissances à jour (nouveaux cours, documents, OCR) : rapide si rien n'a changé.
+fn connaissances_a_jour(c: &Connection) {
+    match connaissances::mettre_a_jour(c) {
+        Ok(r) if r.nouvelles > 0 || !r.illisibles.is_empty() => {
+            eprintln!("connaissances : {} nouvelles sources, {} passages, {} vecteurs, illisibles : {:?}", r.nouvelles, r.passages, r.vecteurs, r.illisibles)
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("connaissances : {e:#}"),
+    }
+}
+
+/// Prépare une matière : ses questions arrivent dans la séance une par une, dès qu'elles sont prêtes.
+fn preparer_une(c: &Connection, m: &MatiereJour) -> Result<()> {
+    generation::serie_comprendre(c, &m.matiere, &debuts(m), PAR_MATIERE, |q| ajouter_questions(c, vec![q]))?;
+    Ok(())
+}
 
 /// Prépare en arrière-plan toutes les matières du jour qui ne le sont pas encore, une par une
 /// (celles qui ont le plus de contenu d'abord). Sans effet sur une matière déjà prête ou en cours.
@@ -367,13 +374,14 @@ pub fn lancer_preparation(chemin: PathBuf) -> bool {
         return false;
     }
     tache("jour".into(), chemin.clone(), move |c| {
+        connaissances_a_jour(c);
         let mut ordre = matieres;
         ordre.sort_by_key(|m| std::cmp::Reverse((m.a_contenu, m.lecons.iter().map(|l| l.description.len()).sum::<usize>())));
         for m in ordre {
             if a_des_questions(&questions(c)?, &m.matiere) || !reserver(&cle_matiere(&m.matiere)) {
                 continue; // déjà prête, ou l'élève l'a choisie et elle se prépare déjà à part
             }
-            let r = generer(c, Phase::Comprendre(&m)).and_then(|q| ajouter_questions(c, q));
+            let r = preparer_une(c, &m);
             liberer(&cle_matiere(&m.matiere));
             if let Err(e) = r {
                 noter_erreur(c, &format!("{} : {e}", m.matiere));
@@ -390,7 +398,10 @@ pub fn preparer_matiere(chemin: PathBuf, matiere: String) -> bool {
     if a_des_questions(&questions(&c).unwrap_or_default(), &m.matiere) {
         return false;
     }
-    tache(cle_matiere(&m.matiere), chemin, move |c| ajouter_questions(c, generer(c, Phase::Comprendre(&m))?))
+    tache(cle_matiere(&m.matiere), chemin, move |c| {
+        connaissances_a_jour(c);
+        preparer_une(c, &m)
+    })
 }
 
 /// Préparation complète sans fil à part (ligne de commande).
@@ -398,221 +409,24 @@ pub fn preparer(c: &Connection, seulement: Option<&str>) -> Result<()> {
     assurer_ligne(c)?;
     let matieres = matieres_du_jour(&config::dossier_donnees());
     c.execute("UPDATE seances_jour SET lecons = ?2 WHERE jour = ?1", params![jour(), serde_json::to_string(&matieres)?])?;
+    connaissances_a_jour(c);
     for m in matieres.iter().filter(|m| seulement.is_none_or(|s| suivi::slug(s) == suivi::slug(&m.matiere))) {
         if !a_des_questions(&questions(c)?, &m.matiere) {
-            ajouter_questions(c, generer(c, Phase::Comprendre(m))?)?;
+            preparer_une(c, m)?;
         }
     }
     Ok(())
 }
 
-/// Prépare une série de questions de révision (points faibles, évals proches, moyennes à remonter).
+/// Prépare une série de questions de révision (notions faibles, à revoir, évals proches), en arrière-plan.
 pub fn lancer_suite(chemin: PathBuf) -> bool {
     tache("suite".into(), chemin, |c| {
-        let nouvelles = generer(c, Phase::Reviser)?;
-        ajouter_questions(c, nouvelles)
+        let deja: Vec<String> = questions(c)?.into_iter().map(|q| q.enonce).collect();
+        generation::serie_reviser(c, PAR_MATIERE, &deja, |q| ajouter_questions(c, vec![q]))?;
+        Ok(())
     })
 }
-#[derive(Clone, Copy)]
-enum Phase<'a> {
-    Comprendre(&'a MatiereJour),
-    Reviser,
-}
 
-#[derive(Deserialize)]
-struct ChapitrePropose {
-    matiere: String,
-    code: String,
-    titre: String,
-    notions: Vec<NotionProposee>,
-}
-
-#[derive(Deserialize)]
-struct NotionProposee {
-    code: String,
-    intitule: String,
-}
-
-const REGLES_FORMATS: &str = r#"Pour CHAQUE question, choisis le format qui rend la réponse la plus naturelle et la plus rapide :
-- "qcm" : 4 choix, pour distinguer des notions proches ; les 3 mauvais choix sont des erreurs réelles.
-  Champs : "choix" (4), "bonne" (0-3), "erreurs" (4 éléments, null pour la bonne réponse).
-- "vrai_faux" : vérification rapide d'une affirmation (pas plus d'1 question sur 5).
-  Champs : "bonne" (0 = Vrai, 1 = Faux), "erreurs" (2 éléments).
-- "reponse_courte" : un mot, une date, une définition en quelques mots, une traduction.
-  Champs : "reponses_acceptees" (toutes les variantes justes : synonymes, avec/sans article, chiffres…).
-- "calcul" : un résultat chiffré. Champs : "valeur" (nombre), "tolerance" (écart accepté), "unite" (ou null).
-- "developpement" : expliquer, justifier, argumenter À PARTIR D'UN DOCUMENT (histoire-géo, SES, français,
-  sciences). Au plus 1 ou 2 par série. "support" est OBLIGATOIRE : le document que l'élève a sous les yeux
-  (voir « Documents » plus bas). Champs : "plan" (2 à 4 parties courtes, ex. ["Ce que montre le document",
-  "Explication avec le cours", "Conclusion"]), "attendus" (3 à 5 points qu'une bonne réponse doit contenir,
-  dont au moins un qui exige de citer ou d'exploiter précisément le document).
-Langues : privilégie reponse_courte (vocabulaire, conjugaison, traduction) et qcm, mais en contexte : une phrase
-ou un court texte dans la langue (le support), plutôt qu'un mot isolé."#;
-
-/// Ce qui fait une bonne question : de la réflexion sur ce qui s'est vraiment passé en cours.
-const REGLES_QUESTIONS: &str = r#"Des questions qui font RÉFLÉCHIR, pas réciter. Une question de cours (« Donne la définition de… »,
-« Qui a écrit… ? », « En quelle année… ? ») ne demande aucune réflexion : au plus 1 ou 2 par série, en
-échauffement. Toutes les autres demandent de SE SERVIR du cours pour raisonner :
-- expliquer un pourquoi ou un comment (« Pourquoi Arnolphe veut-il épouser une jeune fille ignorante ? ») ;
-- interpréter un document : que montre-t-il, qu'est-ce qui le prouve, quelle limite a-t-il ;
-- appliquer à un cas nouveau, prévoir ce qui se passerait si… ;
-- comparer deux notions, deux personnages, deux situations, et dire ce qui change ;
-- repérer l'erreur dans un raisonnement, ou choisir entre deux interprétations et justifier.
-
-Colle à CE QUI S'EST VRAIMENT PASSÉ EN COURS : les textes, scènes, documents, exemples, exercices et
-activités cités dans le cahier de textes et dans les documents des profs. Une question doit ressembler à ce que
-CE prof pourrait demander en éval sur CE cours, pas à une question générique de manuel. Le programme officiel ne
-sert qu'à combler un cours vide.
-
-DES DOCUMENTS : au moins la moitié des questions partent d'un "support". Ouvre les documents des profs avec
-l'outil Read (PDF, images) et prends-y un extrait, un tableau de chiffres, une phrase d'un texte étudié, la
-légende d'un schéma, l'énoncé d'une activité faite en classe. À défaut, un court extrait authentique d'une œuvre
-étudiée (texte exact, pas inventé). Le support est du TEXTE recopié fidèlement (pas un nom de fichier), 1 à 15
-lignes, et finit par sa source entre parenthèses, ex. « (Molière, L'École des femmes, I, 1) » ou
-« (Document du prof : Activité 2, la photosynthèse) ». Pour un graphique ou une image, décris précisément ce
-qu'on y voit et recopie les valeurs utiles.
-
-La correction ("explication") s'appuie aussi sur le cours et le document : elle fait comprendre, elle ne se
-contente pas de donner la réponse."#;
-
-fn generer(c: &Connection, phase: Phase) -> Result<Vec<QuestionJour>> {
-    let skill = config::dossier_skill();
-    let pedagogie = std::fs::read_to_string(skill.join("references").join("pedagogie.md")).unwrap_or_default();
-    let carte: Vec<Value> = suivi::carte(c, None, None)?
-        .into_iter()
-        .map(|l| json!({ "matiere": l.matiere, "chapitre": l.chapitre, "titre_chapitre": l.titre_chapitre, "notion": l.notion, "intitule": l.intitule, "etat": l.etat, "derniere_erreur": l.derniere_erreur }))
-        .collect();
-
-    let (tache_txt, contexte) = match phase {
-        Phase::Comprendre(m) => (
-            format!(
-                "Vérifie que l'élève a COMPRIS ce qu'il a fait aujourd'hui en {matiere}. Écris 6 à 8 questions : 1 ou 2 de\n\
-                 « savoir » pour démarrer, puis surtout « comprendre » et « appliquer », toutes avec \"matiere\": \"{matiere}\", \"phase\": \"comprendre\" et \"lecon\": le titre de la\n\
-                 leçon visée. Ignore ce qui n'est pas du contenu (« correction de l'évaluation », « rendu des copies »…). Si le prof\n\
-                 n'a rien écrit pour la leçon du jour, appuie-toi sur les derniers cours de la matière (chapitre en cours) et sur le\n\
-                 programme officiel du niveau de l'élève.",
-                matiere = m.matiere
-            ),
-            format!(
-                "Leçon(s) du {} :\n{}\n\nDerniers cours de cette matière (avec leurs documents) :\n{}\n\nDocuments du jour (lisibles avec l'outil Read) :\n{}",
-                m.lecons.first().map(|l| &l.debut[..10]).unwrap_or(""),
-                serde_json::to_string_pretty(&m.lecons.iter().map(|l| json!({ "titre": l.titre, "contenu": l.description })).collect::<Vec<_>>())?,
-                serde_json::to_string_pretty(&derniers_cours(&config::dossier_donnees(), &m.matiere))?,
-                m.lecons.iter().flat_map(|l| l.documents.clone()).collect::<Vec<_>>().join("\n")
-            ),
-        ),
-        Phase::Reviser => {
-            let p = suivi::priorites(c, 10)?;
-            let analyse = moyennes::derniere_analyse(c)?;
-            let deja: Vec<String> = questions(c)?.into_iter().map(|q| q.enonce).collect();
-            (
-                String::from("Écris 8 questions de RÉVISION, \"phase\": \"reviser\". Priorité : les notions en rouge/orange ou à revoir\n\
-                 aujourd'hui (répétition espacée), les chapitres des évals proches, puis les matières où l'analyse des moyennes voit\n\
-                 le plus de points à gagner (tu peux y créer de nouveaux chapitres d'après les cours récents). Varie les matières.\n\
-                 Ne repose pas une question déjà posée aujourd'hui (liste plus bas) : reformule ou change d'angle."),
-                format!(
-                    "Priorités :\n{}\n\nÉvaluations à venir : {}\n\nAnalyse des moyennes : {}\n\nCours récents :\n{}\n\n\
-                     Documents des profs : dossier pronote/fichiers/<matière>/ (outil Read).\n\nDéjà posé aujourd'hui :\n{}",
-                    serde_json::to_string_pretty(&p.priorites)?,
-                    serde_json::to_string(&p.evals_a_venir)?,
-                    analyse.map(|a| serde_json::to_string(&a.matieres).unwrap_or_default()).unwrap_or_else(|| "aucune".into()),
-                    cours_recents(&config::dossier_donnees()),
-                    deja.join("\n")
-                ),
-            )
-        }
-    };
-
-    let prompt = format!(
-        r#"Tu prépares la séance de révision du jour d'un lycéen, dans son app. L'app affiche les questions une à une,
-corrige, et met à jour son suivi : toi, tu rédiges les questions.
-
-===== Pédagogie (skill « revisions ») =====
-{pedagogie}
-
-===== Notions déjà suivies (réutilise exactement ces codes de matière/chapitre/notion) =====
-{carte}
-
-===== Ta tâche =====
-{tache_txt}
-
-{contexte}
-
-===== Ce qu'on attend des questions =====
-{REGLES_QUESTIONS}
-
-===== Formats =====
-{REGLES_FORMATS}
-
-Réponds UNIQUEMENT avec un objet JSON, sans texte autour :
-{{
-  "chapitres": [{{"matiere": "nom Pronote exact", "code": "photosynthese", "titre": "La photosynthèse",
-                  "notions": [{{"code": "bilan", "intitule": "Bilan de la photosynthèse"}}]}}],
-  "questions": [{{
-    "phase": "...", "matiere": "nom Pronote exact", "lecon": "titre ou null",
-    "chapitre": "photosynthese", "notion": "bilan", "niveau": "savoir|comprendre|appliquer",
-    "format": "qcm|vrai_faux|reponse_courte|calcul|developpement",
-    "enonce": "…", "support": "extrait recopié (source)" ou null,
-    "choix": [], "bonne": null, "erreurs": [],
-    "reponses_acceptees": [], "valeur": null, "tolerance": null, "unite": null,
-    "plan": [], "attendus": [],
-    "explication": "La correction en 1 à 3 phrases, qui fait comprendre."
-  }}]
-}}
-"chapitres" : seulement les chapitres nouveaux ou complétés (sinon []). Chaque question vise une notion
-existante ou déclarée dans "chapitres"."#,
-        carte = serde_json::to_string(&carte)?,
-    );
-
-    let r = claude::demander(&prompt, "Read", Some(&config::dossier_donnees()));
-    if !r.ok {
-        bail!("{}", r.texte);
-    }
-    let v = claude::extraire_json(&r.texte)?;
-    let source = format!("séance du jour {}", Local::now().format("%d/%m/%Y"));
-    for ch in serde_json::from_value::<Vec<ChapitrePropose>>(v["chapitres"].clone()).unwrap_or_default() {
-        let notions: Vec<String> = ch.notions.iter().map(|n| format!("{}:{}", n.code, n.intitule)).collect();
-        suivi::chapitre(c, &ch.matiere, &ch.code, Some(&ch.titre), &notions, Some(&source))?;
-    }
-    let brutes: Vec<QuestionJour> = serde_json::from_value(v["questions"].clone()).context("questions illisibles")?;
-    let connues: HashSet<(String, String, String)> =
-        suivi::carte(c, None, None)?.into_iter().map(|l| (suivi::slug(&l.matiere), l.chapitre, l.notion)).collect();
-    let phase_txt = if matches!(phase, Phase::Comprendre(_)) { "comprendre" } else { "reviser" };
-    let valides: Vec<QuestionJour> = brutes
-        .into_iter()
-        .map(|mut q| {
-            q.phase = phase_txt.into();
-            q.notion = suivi::slug(&q.notion);
-            if q.format == "vrai_faux" {
-                q.choix = vec!["Vrai".into(), "Faux".into()];
-            }
-            if q.format == "developpement" && q.plan.is_empty() {
-                q.plan = vec!["Ta réponse".into()];
-            }
-            q
-        })
-        .filter(|q| valide(q) && connues.contains(&(suivi::slug(&q.matiere), q.chapitre.clone(), q.notion.clone())))
-        .collect();
-    if valides.is_empty() {
-        bail!("Claude n'a pas produit de questions utilisables, réessaie.");
-    }
-    Ok(valides)
-}
-
-fn cours_recents(dossier: &Path) -> String {
-    let Ok(t) = std::fs::read_to_string(dossier.join("pronote").join("sync.json")) else { return String::new() };
-    let Ok(sync) = serde_json::from_str::<Value>(&t) else { return String::new() };
-    let auj = jour();
-    let mut v: Vec<String> = sync["cours"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|c| !c["contenu"].is_null() && c["debut"].as_str().unwrap_or("").get(..10).is_some_and(|d| d <= auj.as_str()))
-        .map(|c| format!("- {} {} : {}", &c["debut"].as_str().unwrap_or("")[..10], c["matiere"].as_str().unwrap_or(""), c["contenu"]["titre"].as_str().or(c["contenu"]["description"].as_str()).unwrap_or("").chars().take(120).collect::<String>()))
-        .collect();
-    v.sort();
-    v.into_iter().rev().take(25).collect::<Vec<_>>().join("\n")
-}
 
 pub fn valide(q: &QuestionJour) -> bool {
     if !suivi::NIVEAUX.contains(&q.niveau.as_str()) || q.enonce.trim().is_empty() || q.matiere.is_empty() {
@@ -624,7 +438,8 @@ pub fn valide(q: &QuestionJour) -> bool {
         "reponse_courte" => !q.reponses_acceptees.is_empty(),
         "calcul" => q.valeur.is_some(),
         // On développe toujours à partir d'un document, comme en éval.
-        "developpement" => !q.attendus.is_empty() && q.support.as_deref().is_some_and(|s| s.trim().chars().count() >= 20),
+        // Un vrai développement se fait sur document ; une explication courte (une seule zone) n'en a pas besoin.
+        "developpement" => !q.attendus.is_empty() && (q.support.as_deref().is_some_and(|s| s.trim().chars().count() >= 20) || q.plan.len() == 1),
         _ => false,
     }
 }
@@ -645,7 +460,7 @@ fn nombre(t: &str) -> Option<f64> {
 }
 
 /// Enregistre la réponse à la question `idx`. Corrige tout de suite quand c'est possible ;
-/// sinon (réponse rédigée), Claude corrige en arrière-plan et le statut passe à « en_correction ».
+/// sinon (réponse rédigée), l'IA corrige en arrière-plan et le statut passe à « en_correction ».
 pub fn repondre(c: &Connection, chemin: PathBuf, idx: usize, reponse: Value) -> Result<ReponseJour> {
     let qs = questions(c)?;
     let q = qs.get(idx).context("question inconnue")?.clone();
@@ -736,47 +551,63 @@ fn noter_essai(c: &Connection, q: &QuestionJour, ok: bool, erreur: Option<&str>,
     Ok(())
 }
 
-/// Correction d'une réponse rédigée par Claude (réponse courte non reconnue, développement).
+/// Réponse courte proche par le sens d'une réponse acceptée : juste sans passer par le modèle.
+fn proche_par_le_sens(q: &QuestionJour, texte: &str) -> bool {
+    if q.reponses_acceptees.is_empty() || texte.trim().is_empty() {
+        return false;
+    }
+    let mut tous = vec![texte.to_string()];
+    tous.extend(q.reponses_acceptees.iter().cloned());
+    match ia::embeddings(&tous, false) {
+        Ok(v) if v.len() == tous.len() => v[1..].iter().any(|a| ia::cosinus(&v[0], a) >= 0.92),
+        _ => false,
+    }
+}
+
+const SYSTEME_CORRECTION: &str = "Tu corriges la réponse d'un lycéen de seconde comme un bon professeur : précis, juste et bienveillant. Tu t'appuies sur la connaissance du cours et les points attendus. Tu tutoies l'élève. Réponds uniquement en JSON.";
+
+/// Correction d'une réponse rédigée (réponse courte non reconnue, développement) par l'IA locale.
 fn corriger(c: &Connection, idx: usize, q: &QuestionJour, reponse: &Value) -> Result<()> {
     let texte = texte_reponse(q, reponse);
-    let prompt = format!(
-        r#"Corrige la réponse d'un lycéen, avec bienveillance et précision (correction d'un prof).
-
-Question ({matiere}, niveau {niveau}) : {enonce}
-{support}
-Réponses acceptées / points attendus :
-{attendus}
-Correction de référence : {explication}
-
-Réponse de l'élève :
-"""
-{texte}
-"""
-
-Une réponse courte juste mais formulée autrement (synonyme, faute d'orthographe légère) est juste.
-Pour un développement, note la part des points attendus réellement présents et bien expliqués. L'élève doit
-EXPLOITER le document (le citer, relever un chiffre, un mot, un détail précis) : s'il récite son cours sans s'en
-servir, dis-le dans le retour et montre quel passage il aurait pu utiliser.
-Réponds UNIQUEMENT avec un objet JSON :
-{{"score": 0.0 à 1.0, "retour": "2 ou 3 phrases : ce qui est juste, puis ce qui manque ou est faux, et la bonne réponse", "erreur": "type : détail (oubli, confusion, vocabulaire, incompréhension, méthode, calcul, consigne) ou null si juste"}}"#,
-        matiere = q.matiere,
-        niveau = q.niveau,
-        enonce = q.enonce,
-        support = q.support.as_deref().map(|s| format!("Support : {s}")).unwrap_or_default(),
-        attendus = if q.attendus.is_empty() { q.reponses_acceptees.join(" / ") } else { q.attendus.iter().map(|a| format!("- {a}")).collect::<Vec<_>>().join("\n") },
-        explication = q.explication,
-    );
-    let r = claude::demander(&prompt, "", None);
-    let (score, retour, erreur) = if r.ok {
-        let v = claude::extraire_json(&r.texte)?;
-        (
-            v["score"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0),
-            v["retour"].as_str().unwrap_or(&q.explication).to_string(),
-            v["erreur"].as_str().map(String::from),
-        )
+    let (score, retour, erreur) = if q.format == "reponse_courte" && proche_par_le_sens(q, &texte) {
+        (1.0, q.explication.clone(), None)
     } else {
-        // Correction impossible (Claude indisponible) : on donne la correction de référence sans pénaliser.
-        (0.5, format!("Correction automatique indisponible ({}). La réponse attendue : {}", r.texte, q.explication), None)
+        let attendus = if q.attendus.is_empty() {
+            q.reponses_acceptees.join(" / ")
+        } else {
+            q.attendus.iter().map(|a| format!("- {a}")).collect::<Vec<_>>().join("\n")
+        };
+        let mut prompt = format!("Question ({}) : {}\n", q.matiere, q.enonce);
+        if let Some(s) = &q.support {
+            prompt.push_str(&format!("Document :\n{s}\n"));
+        }
+        if let Some(k) = &q.connaissance {
+            prompt.push_str(&format!("Connaissance du cours en jeu : {k}\n"));
+        }
+        prompt.push_str(&format!("Réponses acceptées / points attendus :\n{attendus}\nCorrection de référence : {}\n\n", q.explication));
+        prompt.push_str(&format!("Réponse de l'élève :\n\"\"\"\n{texte}\n\"\"\"\n\n"));
+        prompt.push_str(concat!(
+            "Une réponse courte juste mais formulée autrement (synonyme, faute d'orthographe légère) est juste. ",
+            "Pour une réponse rédigée, note la part des points attendus vraiment présents et bien expliqués. ",
+            "S'il y a un document, l'élève doit l'EXPLOITER (citer, relever un chiffre, un détail) : s'il récite son cours ",
+            "sans s'en servir, dis-le et montre quel passage il aurait pu utiliser.\n",
+            "\"retour\" : 2 ou 3 phrases — ce qui est juste, puis ce qui manque ou est faux, et la bonne réponse.\n",
+            "\"erreur\" : type parmi oubli, confusion, vocabulaire, incompréhension, méthode, calcul, consigne, suivi de « : détail » ; null si c'est juste."
+        ));
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "score": { "type": "number", "minimum": 0, "maximum": 1 }, "retour": { "type": "string" }, "erreur": { "type": ["string", "null"] } },
+            "required": ["score", "retour", "erreur"]
+        });
+        match ia::demander_json(SYSTEME_CORRECTION, &prompt, &ia::Options { schema: Some(schema), temperature: Some(0.3), ..Default::default() }) {
+            Ok(v) => (
+                v["score"].as_f64().unwrap_or(0.0).clamp(0.0, 1.0),
+                v["retour"].as_str().unwrap_or(&q.explication).to_string(),
+                v["erreur"].as_str().filter(|e| !e.is_empty() && *e != "null").map(String::from),
+            ),
+            // IA indisponible : on donne la correction de référence sans pénaliser.
+            Err(e) => (0.5, format!("Correction automatique indisponible ({e}). La réponse attendue : {}", q.explication), None),
+        }
     };
     let statut = if score >= 0.7 { "juste" } else if score >= 0.3 { "partiel" } else { "faux" };
     c.execute(
@@ -816,7 +647,7 @@ mod tests {
         let base = || QuestionJour {
             phase: "reviser".into(), matiere: "SVT".into(), lecon: None, chapitre: "c".into(), notion: "n".into(), niveau: "savoir".into(),
             format: "qcm".into(), enonce: "?".into(), support: None, choix: vec![], bonne: None, reponses_acceptees: vec![], valeur: None,
-            tolerance: None, unite: None, plan: vec![], attendus: vec![], erreurs: vec![], explication: "".into(),
+            tolerance: None, unite: None, plan: vec![], attendus: vec![], erreurs: vec![], explication: "".into(), connaissance: None,
         };
         let mut q = base();
         assert!(!valide(&q));

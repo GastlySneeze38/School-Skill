@@ -1,9 +1,10 @@
-mod claude;
 mod cli;
 mod config;
+mod connaissances;
 mod db;
+mod generation;
+mod ia;
 mod moyennes;
-mod outils;
 mod pronote;
 mod revision_jour;
 mod seance;
@@ -57,7 +58,7 @@ struct EtatPronote {
 struct EtatConfig {
     base: EtatBase,
     pronote: EtatPronote,
-    claude: claude::EtatClaude,
+    ia: ia::EtatIa,
 }
 
 #[tauri::command]
@@ -83,9 +84,7 @@ async fn etat_config(base: tauri::State<'_, Base>) -> R<EtatConfig> {
         nb_cours: compter("cours"),
         nb_evals_a_venir: compter("controles_a_venir"),
     };
-    // `claude auth status` lance un programme : hors du fil principal.
-    let claude = en_tache(claude::etat).await?;
-    Ok(EtatConfig { base: etat_base, pronote, claude })
+    Ok(EtatConfig { base: etat_base, pronote, ia: ia::etat() })
 }
 
 /// Enregistre la connexion Pronote. Le mot de passe va directement dans le coffre Windows ;
@@ -225,21 +224,36 @@ fn stats_revision(base: tauri::State<'_, Base>) -> R<suivi::StatsRevision> {
     suivi::stats_revision(&conn).map_err(erreur)
 }
 
-// ---------------------------------------------------------------- Claude et séances
+// ---------------------------------------------------------------- IA locale et séances
 
 #[tauri::command]
-async fn etat_claude() -> R<claude::EtatClaude> {
-    en_tache(claude::etat).await
+fn etat_ia() -> ia::EtatIa {
+    ia::etat()
 }
 
+/// Petit essai de bout en bout : charge le modèle et lui fait écrire une phrase.
 #[tauri::command]
-fn connecter_claude() -> R<()> {
-    claude::ouvrir_connexion().map_err(erreur)
+async fn tester_ia() -> R<String> {
+    en_tache(|| {
+        let v = ia::demander_json(
+            "Réponds uniquement en JSON.",
+            "Écris une phrase courte et encourageante pour un lycéen qui commence ses révisions.",
+            &ia::Options {
+                schema: Some(serde_json::json!({"type": "object", "properties": {"phrase": {"type": "string"}}, "required": ["phrase"]})),
+                ..Default::default()
+            },
+        )
+        .map_err(|e| format!("{e:#}"))?;
+        Ok(v["phrase"].as_str().unwrap_or_default().to_string())
+    })
+    .await?
 }
 
+/// Recherche dans les cours (la même que celle de l'IA) : pour l'interface et les tests.
 #[tauri::command]
-async fn tester_claude() -> R<claude::Reponse> {
-    en_tache(|| claude::demander("Réponds uniquement par : Claude est prêt pour tes révisions.", "", None)).await
+async fn chercher_cours(base: tauri::State<'_, Base>, requete: String, matiere: Option<String>) -> R<Vec<connaissances::Passage>> {
+    let chemin = base.chemin.clone();
+    en_tache(move || connaissances::chercher(&db::ouvrir(&chemin)?, &requete, matiere.as_deref(), 8)).await?.map_err(erreur)
 }
 
 #[tauri::command]
@@ -276,7 +290,8 @@ pub fn run() {
         eprintln!("Import des anciennes données JSON impossible : {e}");
     }
     photographier_moyennes(&conn);
-    // La séance du jour se prépare dès l'ouverture : quand l'élève arrive, elle est prête.
+    // Le modèle se charge dès l'ouverture, et la séance du jour se prépare : quand l'élève arrive, elle est prête.
+    ia::prechauffer();
     revision_jour::lancer_preparation(chemin.clone());
 
     tauri::Builder::default()
@@ -289,9 +304,9 @@ pub fn run() {
             lire_suivi,
             contenu_matieres,
             carte,
-            etat_claude,
-            connecter_claude,
-            tester_claude,
+            etat_ia,
+            tester_ia,
+            chercher_cours,
             preparer_test,
             enregistrer_reponse,
             lire_moyennes,

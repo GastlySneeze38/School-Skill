@@ -121,6 +121,58 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (jour, idx)
     );
     "#,
+    // 4 — base de connaissances pour l'IA locale : sources, passages indexés, fiches de leçon
+    r#"
+    -- Tout ce qu'on sait des cours : cahier de textes, devoirs, documents des profs (texte extrait ou OCR).
+    CREATE TABLE sources (
+        id          INTEGER PRIMARY KEY,
+        cle         TEXT NOT NULL UNIQUE,      -- 'cours:2026-11-24T08:00:00:italien-lv2', 'doc:<chemin>'
+        parent      TEXT,                      -- document : clé du cours auquel il est attaché
+        matiere     TEXT NOT NULL,             -- nom Pronote
+        type        TEXT NOT NULL,             -- cours | devoir | document
+        titre       TEXT NOT NULL,
+        date        TEXT,                      -- AAAA-MM-JJ
+        chemin      TEXT,
+        texte       TEXT NOT NULL,
+        empreinte   TEXT NOT NULL,             -- pour ne refaire le travail que si la source change
+        ajoute_le   TEXT NOT NULL
+    );
+    CREATE INDEX sources_matiere ON sources(matiere, date);
+
+    -- Les sources découpées en passages de 100 à 300 mots : ce que l'IA lit et cite.
+    CREATE TABLE passages (
+        id          INTEGER PRIMARY KEY,
+        source_id   INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+        matiere     TEXT NOT NULL,
+        ordre       INTEGER NOT NULL,
+        texte       TEXT NOT NULL,
+        embedding   BLOB                       -- vecteur de sens (f32), NULL tant qu'il n'est pas calculé
+    );
+    CREATE INDEX passages_source ON passages(source_id);
+    CREATE INDEX passages_matiere ON passages(matiere);
+
+    -- Recherche plein texte (sans accents) : rapide et sans IA.
+    CREATE VIRTUAL TABLE passages_fts USING fts5(
+        texte, content='passages', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
+    );
+    CREATE TRIGGER passages_ai AFTER INSERT ON passages BEGIN
+        INSERT INTO passages_fts(rowid, texte) VALUES (new.id, new.texte);
+    END;
+    CREATE TRIGGER passages_ad AFTER DELETE ON passages BEGIN
+        INSERT INTO passages_fts(passages_fts, rowid, texte) VALUES ('delete', old.id, old.texte);
+    END;
+
+    -- Une fiche de connaissances par cours, écrite une fois par l'IA (JSON) : c'est elle qu'on donne au modèle,
+    -- pas le cours brut.
+    CREATE TABLE fiches (
+        source_id   INTEGER PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+        matiere     TEXT NOT NULL,
+        chapitre    TEXT NOT NULL,
+        contenu     TEXT NOT NULL,
+        cree_le     TEXT NOT NULL
+    );
+    CREATE INDEX fiches_chapitre ON fiches(matiere, chapitre);
+    "#,
 ];
 
 pub fn chemin_base(dossier_donnees: &Path) -> PathBuf {

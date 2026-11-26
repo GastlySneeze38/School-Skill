@@ -55,7 +55,7 @@ export function BarreLaterale({
       </div>
 
       <div className="border-t border-bordure pt-2">
-        <IndicateurClaude ouvrir={() => aller("parametres")} />
+        <IndicateurIa ouvrir={() => aller("parametres")} />
         <Entree p={PAGE_PARAMETRES} active={page === "parametres"} aller={aller} />
       </div>
     </nav>
@@ -94,22 +94,22 @@ function useSurbrillance() {
   return { survoler, quitter, pastille };
 }
 
-/** État de Claude toujours visible : si ce n'est pas connecté, on le voit tout de suite. */
-function IndicateurClaude({ ouvrir }: { ouvrir: () => void }) {
-  const { claude } = useDonnees();
-  const pret = !!claude?.connecte;
+/** État de l'IA locale toujours visible : s'il manque un modèle, on le voit tout de suite. */
+function IndicateurIa({ ouvrir }: { ouvrir: () => void }) {
+  const { ia } = useDonnees();
+  const pret = !!ia?.installe;
   return (
     <button
       onClick={ouvrir}
-      title={pret ? "Claude est connecté à ton forfait" : "Claude n'est pas connecté : clique pour le connecter"}
+      title={pret ? `IA locale : ${ia?.modele}, sur ton ordinateur` : "Il manque des fichiers de l'IA locale : clique pour voir lesquels"}
       className="mb-1 flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] text-encre-2 hover:bg-black/[0.045]"
     >
       <span className="relative flex size-[15px] items-center justify-center">
-        <span className={`size-2 rounded-full ${claude === null ? "bg-bordure-forte" : pret ? "bg-vert" : "bg-orange"}`} />
+        <span className={`size-2 rounded-full ${ia === null ? "bg-bordure-forte" : pret ? "bg-vert" : "bg-orange"}`} />
       </span>
-      <span className="flex-1">Claude</span>
+      <span className="flex-1">IA locale</span>
       <span className={`text-[11.5px] ${pret ? "text-encre-3" : "font-medium text-orange"}`}>
-        {claude === null ? "…" : pret ? "connecté" : "à connecter"}
+        {ia === null ? "…" : !pret ? "à installer" : ia.ecriture === "pret" ? "chargée" : "en veille"}
       </span>
     </button>
   );

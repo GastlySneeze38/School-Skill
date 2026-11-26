@@ -3,13 +3,13 @@ import {
   analyserMoyennes,
   dansTauri,
   derniereAnalyse,
-  etatClaude,
+  etatIa,
   lireMoyennes,
   lirePronote,
   lireSuivi,
   statsRevision,
   type Analyse,
-  type EtatClaude,
+  type EtatIa,
   type Moyennes,
   type Notion,
   type Pronote,
@@ -23,12 +23,12 @@ type Donnees = {
   chargement: boolean;
   erreur: string | null;
   recharger: () => Promise<void>;
-  /** État de la connexion à Claude (Claude Code + forfait), `null` pendant la vérification. */
-  claude: EtatClaude | null;
-  verifierClaude: () => Promise<EtatClaude | null>;
+  /** État de l'IA locale (llama.cpp + modèles), `null` pendant la vérification. */
+  ia: EtatIa | null;
+  verifierIa: () => Promise<EtatIa | null>;
   moyennes: Moyennes | null;
   stats: StatsRevision | null;
-  /** Conseils de Claude sur les matières où gagner des points (la dernière analyse). */
+  /** Conseils de l'IA sur les matières où gagner des points (la dernière analyse). */
   analyse: Analyse | null;
   analyseEnCours: boolean;
   erreurAnalyse: string | null;
@@ -44,7 +44,7 @@ export function FournisseurDonnees({ children }: { children: ReactNode }) {
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
 
-  const [claude, setClaude] = useState<EtatClaude | null>(null);
+  const [ia, setIa] = useState<EtatIa | null>(null);
   const [moyennes, setMoyennes] = useState<Moyennes | null>(null);
   const [stats, setStats] = useState<StatsRevision | null>(null);
   const [analyse, setAnalyse] = useState<Analyse | null>(null);
@@ -64,11 +64,11 @@ export function FournisseurDonnees({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const verifierClaude = useCallback(async () => {
-    const e: EtatClaude = dansTauri()
-      ? await etatClaude().catch((err) => ({ installe: false, connecte: false, version: null, methode: null, abonnement: null, detail: String(err) }))
-      : { installe: true, connecte: true, version: "aperçu", methode: "claude.ai", abonnement: "pro", detail: null };
-    setClaude(e);
+  const verifierIa = useCallback(async () => {
+    const e: EtatIa = dansTauri()
+      ? await etatIa().catch((err) => ({ installe: false, manquants: [String(err)], ecriture: "arrete" as const, recherche: "arrete" as const, modele: "", dossier: "" }))
+      : { installe: true, manquants: [], ecriture: "pret", recherche: "pret", modele: "Qwen3.5-9B (aperçu)", dossier: "" };
+    setIa(e);
     return e;
   }, []);
 
@@ -91,12 +91,12 @@ export function FournisseurDonnees({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void recharger();
-    void verifierClaude();
-  }, [recharger, verifierClaude]);
+    void verifierIa();
+  }, [recharger, verifierIa]);
 
   return (
     <Ctx.Provider
-      value={{ pronote, suivi, chargement, erreur, recharger, claude, verifierClaude, moyennes, stats, analyse, analyseEnCours, erreurAnalyse, lancerAnalyse }}
+      value={{ pronote, suivi, chargement, erreur, recharger, ia, verifierIa, moyennes, stats, analyse, analyseEnCours, erreurAnalyse, lancerAnalyse }}
     >
       {children}
     </Ctx.Provider>

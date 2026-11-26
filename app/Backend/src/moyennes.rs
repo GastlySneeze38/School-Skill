@@ -1,4 +1,4 @@
-//! Moyennes : progression par trimestre et au fil du temps, et conseils de Claude
+//! Moyennes : progression par trimestre et au fil du temps, et conseils de l'IA
 //! sur les matières où l'élève peut gagner le plus de points.
 
 use std::collections::BTreeMap;
@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{claude, config, suivi};
+use crate::{config, ia, suivi};
 
 const GENERALE: &str = "__generale__";
 
@@ -178,14 +178,14 @@ pub fn lire(conn: &Connection) -> Result<Option<Moyennes>> {
     Ok(Some(Moyennes { periodes: avec_notes, periode_courante: courante, generale, generale_calculee: calculee, matieres, au_dessus_classe: au_dessus }))
 }
 
-// ---------------------------------------------------------------- conseils de Claude
+// ---------------------------------------------------------------- conseils de l'IA
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ConseilMatiere {
     pub matiere: String,
     /// 1 = à faire remonter en priorité, 2 = à surveiller, 3 = à entretenir.
     pub priorite: u8,
-    /// Points de moyenne gagnables d'ici la fin du trimestre, selon Claude.
+    /// Points de moyenne gagnables d'ici la fin du trimestre, selon l'IA.
     pub potentiel: f64,
     pub objectif: Option<f64>,
     pub pourquoi: String,
@@ -205,7 +205,7 @@ pub fn derniere_analyse(conn: &Connection) -> Result<Option<Analyse>> {
     Ok(t.and_then(|t| serde_json::from_str(&t).ok()))
 }
 
-/// Demande à Claude d'estimer où l'élève peut gagner le plus de points, et quoi réviser.
+/// Demande à l'IA locale d'estimer où l'élève peut gagner le plus de points, et quoi réviser.
 pub fn analyser(conn: &Connection) -> Result<Analyse> {
     let Some(moy) = lire(conn)? else { bail!("Pas encore de moyennes : synchronise Pronote d'abord.") };
     let dossier = config::dossier_donnees();
@@ -260,11 +260,11 @@ fin du trimestre. "objectif" = moyenne visée réaliste pour la fin du trimestre
         noms = noms.join(" | "),
     );
 
-    let r = claude::demander(&prompt, "", None);
-    if !r.ok {
-        bail!("{}", r.texte);
-    }
-    let v = claude::extraire_json(&r.texte)?;
+    let v = ia::demander_json(
+        "Tu es le coach de révision d'un lycéen. Réponds uniquement en JSON.",
+        &prompt,
+        &ia::Options { temperature: Some(0.4), max_jetons: Some(3000), ..Default::default() },
+    )?;
     let mut conseils: Vec<ConseilMatiere> = serde_json::from_value(v["matieres"].clone())?;
     conseils.retain(|c| noms.contains(&c.matiere.as_str()));
     conseils.sort_by(|a, b| a.priorite.cmp(&b.priorite).then(b.potentiel.partial_cmp(&a.potentiel).unwrap_or(std::cmp::Ordering::Equal)));

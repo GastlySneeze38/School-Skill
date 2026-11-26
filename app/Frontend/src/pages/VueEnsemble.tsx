@@ -29,7 +29,7 @@ export function VueEnsemble({ aller }: { aller: (id: IdPage) => void }) {
     dejaAffichee = true;
   }, []);
   const evals = toutesLesEvals(suivi?.evals ?? [], pronote?.controles_a_venir ?? []);
-  // Une éval dans la semaine passe d'abord ; sinon, la matière où Claude voit le plus de points à gagner.
+  // Une éval dans la semaine passe d'abord ; sinon, la matière où l'IA voit le plus de points à gagner.
   const prochaine = evals.find((e) => joursAvant(e.date) <= 7);
   const aRemonter = analyse?.matieres.find((c) => c.priorite === 1);
   const matiereSeance = prochaine?.matiere ?? aRemonter?.matiere;
@@ -164,7 +164,7 @@ export function VueEnsemble({ aller }: { aller: (id: IdPage) => void }) {
 <m.div custom={4} variants={cascade} initial={initial} animate="visible">
         <Carte
           titre="Tes moyennes"
-          aide="Ta moyenne générale et les matières où Claude voit le plus de points à gagner."
+          aide="Ta moyenne générale et les matières où l'IA voit le plus de points à gagner."
           sansMarge
           className="h-full"
           actions={<button className="btn btn-fantome h-7 text-encre-2" onClick={() => aller("progres")}>Voir mes progrès</button>}
@@ -196,7 +196,7 @@ export function VueEnsemble({ aller }: { aller: (id: IdPage) => void }) {
               ))}
               {!analyse && (
                 <Ligne onClick={() => aller("progres")}>
-                  <p className="flex-1 text-[12.5px] text-encre-2">Demande à Claude où tu peux gagner des points.</p>
+                  <p className="flex-1 text-[12.5px] text-encre-2">Demande à l'IA où tu peux gagner des points.</p>
                 </Ligne>
               )}
             </>

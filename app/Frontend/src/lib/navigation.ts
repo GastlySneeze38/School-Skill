@@ -74,7 +74,7 @@ export const SECTIONS: { titre: string | null; pages: Page[] }[] = [
 export const PAGE_PARAMETRES: Page = {
   id: "parametres",
   titre: "Paramètres",
-  description: "Connexion Pronote, Claude et base de données.",
+  description: "Connexion Pronote, IA locale et base de données.",
   icone: Settings,
   couleur: "#4d4f46",
   raccourci: ",",
